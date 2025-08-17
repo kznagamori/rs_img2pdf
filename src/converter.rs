@@ -66,7 +66,7 @@ impl ImageToPdfConverter {
             let page_id = Ref::new(next_id);
             next_id += 1;
             
-            self.add_image_as_page(&mut pdf, page_id, &processed_image, &mut next_id)?;
+            self.add_image_as_page(&mut pdf, page_id, &processed_image, file_path, &mut next_id)?;
             page_ids.push(page_id);
         }
 
@@ -188,6 +188,7 @@ impl ImageToPdfConverter {
     /// * `pdf` - PDFライター
     /// * `page_id` - ページID
     /// * `img` - 追加する画像
+    /// * `original_path` - 元の画像ファイルのパス
     /// * `next_id` - 次に使用するID（更新される）
     ///
     /// # Returns
@@ -197,6 +198,7 @@ impl ImageToPdfConverter {
         pdf: &mut Pdf, 
         page_id: Ref, 
         img: &DynamicImage, 
+        original_path: &Path,
         next_id: &mut i32
     ) -> Result<()> {
         // 画像のサイズを取得
@@ -208,7 +210,7 @@ impl ImageToPdfConverter {
         let page_height = img_height as f32 / dpi * 72.0;
         
         // 画像をJPEGバイトデータに変換
-        let image_bytes = self.image_to_jpeg_bytes(img)?;
+        let image_bytes = self.image_to_jpeg_bytes(img, original_path)?;
         
         // 画像XObjectのID
         let image_id = Ref::new(*next_id);
@@ -250,19 +252,43 @@ impl ImageToPdfConverter {
         Ok(())
     }
 
-    /// 画像をJPEGバイト配列に変換する
+    /// 画像をJPEGバイト配列に変換する（JPEG/JPGの場合は一度BMPに変換）
     ///
     /// # Arguments
     /// * `img` - 変換する画像
+    /// * `original_path` - 元の画像ファイルのパス
     ///
     /// # Returns
     /// * `Result<Vec<u8>>` - 画像のJPEGバイト配列
-    fn image_to_jpeg_bytes(&self, img: &DynamicImage) -> Result<Vec<u8>> {
+    fn image_to_jpeg_bytes(&self, img: &DynamicImage, original_path: &Path) -> Result<Vec<u8>> {
         let mut buffer = Vec::new();
         let mut cursor = Cursor::new(&mut buffer);
         
-        // JPEG形式でエンコード（品質80%）
-        img.write_to(&mut cursor, ImageOutputFormat::Jpeg(80))?;
+        // JPEG/JPGファイルの場合は一度BMPに変換してからJPEGに変換
+        if let Some(extension) = original_path.extension() {
+            let ext_str = extension.to_string_lossy().to_lowercase();
+            if ext_str == "jpg" || ext_str == "jpeg" {
+                debug!("Converting JPEG/JPG to BMP first, then to JPEG: {:?}", original_path);
+                
+                // 一度BMPに変換
+                let mut bmp_buffer = Vec::new();
+                let mut bmp_cursor = Cursor::new(&mut bmp_buffer);
+                img.write_to(&mut bmp_cursor, ImageOutputFormat::Bmp)?;
+                
+                // BMPから再度読み込み
+                let bmp_cursor = Cursor::new(bmp_buffer);
+                let bmp_img = image::load(bmp_cursor, image::ImageFormat::Bmp)?;
+                
+                // 最終的にJPEGでエンコード
+                bmp_img.write_to(&mut cursor, ImageOutputFormat::Jpeg(80))?;
+            } else {
+                // その他の形式はそのままJPEGでエンコード
+                img.write_to(&mut cursor, ImageOutputFormat::Jpeg(80))?;
+            }
+        } else {
+            // 拡張子がない場合はそのままJPEGでエンコード
+            img.write_to(&mut cursor, ImageOutputFormat::Jpeg(80))?;
+        }
         
         Ok(buffer)
     }
